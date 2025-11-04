@@ -111,7 +111,7 @@ python run_dpsk_ocr_eval_batch.py
 uv venv
 source .venv/bin/activate
 # Until v0.11.1 release, you need to install vLLM from nightly build
-uv pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly
+uv pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly --extra-index-url https://download.pytorch.org/whl/cu129 --index-strategy unsafe-best-match
 ```
 
 ```python
