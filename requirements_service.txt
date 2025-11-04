@@ -1,0 +1,24 @@
+# Base requirements from original project
+transformers==4.46.3
+tokenizers==0.20.3
+PyMuPDF
+img2pdf
+einops
+easydict
+addict 
+Pillow
+numpy
+
+# vLLM for model inference
+vllm>=0.6.0
+
+# FastAPI and server dependencies
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+httpx>=0.27.0
+pydantic>=2.6.0
+
+# Additional utilities
+python-dotenv>=1.0.0
+
