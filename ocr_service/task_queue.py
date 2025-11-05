@@ -39,6 +39,9 @@ class Task:
     ngram_size: Optional[int] = None
     window_size: Optional[int] = None
     
+    # Optional batch task reference
+    batch_task_id: Optional[str] = None
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert task to dictionary for API response"""
         response = {
@@ -56,11 +59,152 @@ class Task:
         return response
 
 
+@dataclass
+class BatchTaskItem:
+    """Represents a single item within a batch task"""
+    url: str
+    task_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class BatchTask:
+    """Represents a batch OCR task containing multiple sub-tasks"""
+    batch_task_id: str
+    items: List[BatchTaskItem]
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    
+    def to_dict(self, task_queue: 'TaskQueue') -> Dict[str, Any]:
+        """Convert batch task to dictionary for API response"""
+        results = []
+        total = len(self.items)
+        completed = 0
+        failed = 0
+        pending = 0
+        processing = 0
+        
+        for item in self.items:
+            if item.task_id:
+                task = None
+                # Try to get task status (need to access task_queue, but we'll do it async)
+                # For now, we'll get status from the task directly in the async method
+                task_dict = {
+                    "url": item.url,
+                    "task_id": item.task_id,
+                }
+            else:
+                task_dict = {
+                    "url": item.url,
+                    "error": item.error or "Unknown error",
+                }
+                failed += 1
+            
+            results.append(task_dict)
+        
+        return {
+            "batch_task_id": self.batch_task_id,
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "pending": pending,
+            "processing": processing,
+            "results": results,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+    
+    async def to_dict_async(self, task_queue: 'TaskQueue') -> Dict[str, Any]:
+        """Convert batch task to dictionary with current task statuses"""
+        results = []
+        total = len(self.items)
+        completed = 0
+        failed = 0
+        pending = 0
+        processing = 0
+        
+        for item in self.items:
+            if item.task_id:
+                task = await task_queue.get_task(item.task_id)
+                if task:
+                    status = task.status
+                    if status == TaskStatus.COMPLETED:
+                        completed += 1
+                        task_dict = {
+                            "url": item.url,
+                            "task_id": item.task_id,
+                            "status": status.value,
+                            "result": task.result,
+                        }
+                    elif status == TaskStatus.FAILED:
+                        failed += 1
+                        task_dict = {
+                            "url": item.url,
+                            "task_id": item.task_id,
+                            "status": status.value,
+                            "error": task.error,
+                        }
+                    elif status == TaskStatus.PROCESSING:
+                        processing += 1
+                        task_dict = {
+                            "url": item.url,
+                            "task_id": item.task_id,
+                            "status": status.value,
+                        }
+                    else:  # PENDING
+                        pending += 1
+                        task_dict = {
+                            "url": item.url,
+                            "task_id": item.task_id,
+                            "status": status.value,
+                        }
+                else:
+                    # Task not found, treat as failed
+                    failed += 1
+                    task_dict = {
+                        "url": item.url,
+                        "task_id": item.task_id,
+                        "error": "Task not found",
+                    }
+            else:
+                failed += 1
+                task_dict = {
+                    "url": item.url,
+                    "error": item.error or "Unknown error",
+                }
+            
+            results.append(task_dict)
+        
+        # Determine overall batch status
+        if completed == total:
+            batch_status = "completed"
+        elif failed == total:
+            batch_status = "failed"
+        elif processing > 0 or pending > 0:
+            batch_status = "processing"
+        else:
+            batch_status = "pending"
+        
+        return {
+            "batch_task_id": self.batch_task_id,
+            "status": batch_status,
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "pending": pending,
+            "processing": processing,
+            "results": results,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
 class TaskQueue:
     """Thread-safe task queue with batching and cleanup"""
     
     def __init__(self):
         self.tasks: Dict[str, Task] = {}
+        self.batch_tasks: Dict[str, BatchTask] = {}
         self.pending_queue: asyncio.Queue = asyncio.Queue()
         self.lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -73,18 +217,30 @@ class TaskQueue:
         max_tokens: Optional[int] = None,
         ngram_size: Optional[int] = None,
         window_size: Optional[int] = None,
+        *,
+        allow_overflow: bool = False,
+        batch_task_id: Optional[str] = None,
     ) -> Optional[Task]:
         """
         Create a new task and add to queue
         
         Returns:
-            Task if created successfully, None if queue is full
+            Task if created successfully, None if queue is full and overflow not allowed
         """
         async with self.lock:
             # Check if queue is full
-            if len(self.tasks) >= MAX_QUEUE_SIZE:
-                logger.warning(f"Queue is full ({len(self.tasks)}/{MAX_QUEUE_SIZE})")
+            current_size = len(self.tasks)
+
+            if not allow_overflow and current_size >= MAX_QUEUE_SIZE:
+                logger.warning(f"Queue is full ({current_size}/{MAX_QUEUE_SIZE})")
                 return None
+
+            if allow_overflow and current_size >= MAX_QUEUE_SIZE:
+                logger.warning(
+                    "Queue size %s exceeds configured MAX_QUEUE_SIZE %s due to overflow allowance",
+                    current_size + 1,
+                    MAX_QUEUE_SIZE,
+                )
             
             task_id = str(uuid.uuid4())
             task = Task(
@@ -96,6 +252,7 @@ class TaskQueue:
                 max_tokens=max_tokens,
                 ngram_size=ngram_size,
                 window_size=window_size,
+                batch_task_id=batch_task_id,
             )
             
             self.tasks[task_id] = task
@@ -103,6 +260,34 @@ class TaskQueue:
             
             logger.info(f"Created task {task_id}, queue size: {len(self.tasks)}")
             return task
+    
+    async def create_batch_task(self, items: List[BatchTaskItem]) -> BatchTask:
+        """Create a new batch task"""
+        async with self.lock:
+            batch_task_id = str(uuid.uuid4())
+            batch_task = BatchTask(
+                batch_task_id=batch_task_id,
+                items=items,
+            )
+            
+            self.batch_tasks[batch_task_id] = batch_task
+            logger.info(f"Created batch task {batch_task_id} with {len(items)} items")
+            return batch_task
+    
+    async def get_batch_task(self, batch_task_id: str) -> Optional[BatchTask]:
+        """Get batch task by ID"""
+        async with self.lock:
+            return self.batch_tasks.get(batch_task_id)
+    
+    async def update_batch_task_items(self, batch_task_id: str, items: List[BatchTaskItem]):
+        """Update batch task items (thread-safe)"""
+        async with self.lock:
+            if batch_task_id in self.batch_tasks:
+                batch_task = self.batch_tasks[batch_task_id]
+                batch_task.items = items
+                batch_task.updated_at = time.time()
+                return True
+            return False
     
     async def get_task(self, task_id: str) -> Optional[Task]:
         """Get task by ID"""
@@ -193,6 +378,19 @@ class TaskQueue:
             
             if to_remove:
                 logger.info(f"Cleaned up {len(to_remove)} old tasks")
+            
+            # Clean up old batch tasks
+            batch_to_remove = []
+            for batch_task_id, batch_task in self.batch_tasks.items():
+                if current_time - batch_task.created_at > TASK_TTL:
+                    batch_to_remove.append(batch_task_id)
+            
+            for batch_task_id in batch_to_remove:
+                del self.batch_tasks[batch_task_id]
+                logger.info(f"Cleaned up old batch task {batch_task_id}")
+            
+            if batch_to_remove:
+                logger.info(f"Cleaned up {len(batch_to_remove)} old batch tasks")
     
     async def start_cleanup_task(self):
         """Start background cleanup task"""
