@@ -145,7 +145,108 @@ curl -X POST "http://localhost:8000/ocr/url" \
 
 响应：同上
 
-### 3. 查询任务结果
+### 3. 批量提交图片 URL
+
+```bash
+curl -X POST "http://localhost:8000/ocr/url/batch" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "urls": [
+      "https://example.com/image1.jpg",
+      "https://example.com/image2.jpg",
+      "https://example.com/image3.jpg"
+    ],
+    "prompt": "<image>\n<|grounding|>Convert the document to markdown.",
+    "temperature": 0.0,
+    "max_tokens": 8192
+  }'
+```
+
+响应：
+```json
+{
+  "batch_task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "status": "pending"
+}
+```
+
+### 4. 查询批量任务结果
+
+```bash
+curl "http://localhost:8000/ocr/batch/550e8400-e29b-41d4-a716-446655440001"
+```
+
+响应（处理中）：
+```json
+{
+  "batch_task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "status": "processing",
+  "total": 3,
+  "completed": 1,
+  "failed": 0,
+  "pending": 1,
+  "processing": 1,
+  "results": [
+    {
+      "url": "https://example.com/image1.jpg",
+      "task_id": "550e8400-e29b-41d4-a716-446655440002",
+      "status": "completed",
+      "result": "# Document Title\n\nDocument content..."
+    },
+    {
+      "url": "https://example.com/image2.jpg",
+      "task_id": "550e8400-e29b-41d4-a716-446655440003",
+      "status": "processing"
+    },
+    {
+      "url": "https://example.com/image3.jpg",
+      "task_id": "550e8400-e29b-41d4-a716-446655440004",
+      "status": "pending"
+    }
+  ],
+  "created_at": 1699000000.0,
+  "updated_at": 1699000001.0
+}
+```
+
+响应（完成）：
+```json
+{
+  "batch_task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "status": "completed",
+  "total": 3,
+  "completed": 3,
+  "failed": 0,
+  "pending": 0,
+  "processing": 0,
+  "results": [
+    {
+      "url": "https://example.com/image1.jpg",
+      "task_id": "550e8400-e29b-41d4-a716-446655440002",
+      "status": "completed",
+      "result": "# Document 1\n\nContent 1..."
+    },
+    {
+      "url": "https://example.com/image2.jpg",
+      "task_id": "550e8400-e29b-41d4-a716-446655440003",
+      "status": "completed",
+      "result": "# Document 2\n\nContent 2..."
+    },
+    {
+      "url": "https://example.com/image3.jpg",
+      "task_id": "550e8400-e29b-41d4-a716-446655440004",
+      "status": "completed",
+      "result": "# Document 3\n\nContent 3..."
+    }
+  ],
+  "created_at": 1699000000.0,
+  "updated_at": 1699000005.0
+}
+```
+
+**注意**：批量 API 允许超出配置的 `MAX_QUEUE_SIZE` 限制，以便将分页工作负载保持在一起。每个 URL 会独立验证，部分失败不会影响其他任务。
+
+### 5. 查询单个任务结果
 
 ```bash
 curl "http://localhost:8000/ocr/550e8400-e29b-41d4-a716-446655440000"
@@ -172,7 +273,7 @@ curl "http://localhost:8000/ocr/550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
-### 4. 队列满时的响应
+### 6. 队列满时的响应
 
 ```json
 {
@@ -182,7 +283,7 @@ curl "http://localhost:8000/ocr/550e8400-e29b-41d4-a716-446655440000"
 
 HTTP 状态码：503 Service Unavailable
 
-### 5. 查看服务统计
+### 7. 查看服务统计
 
 ```bash
 curl "http://localhost:8000/stats"

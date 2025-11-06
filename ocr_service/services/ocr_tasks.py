@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
@@ -85,7 +86,7 @@ async def enqueue_tasks_from_urls(
     ngram_size: Optional[int] = None,
     window_size: Optional[int] = None,
 ) -> BatchTask:
-    """Download multiple URLs and enqueue tasks as a batch, allowing queue overflow.
+    """Download multiple URLs concurrently and enqueue tasks as a batch, allowing queue overflow.
     
     Returns:
         BatchTask containing all sub-tasks
@@ -101,8 +102,9 @@ async def enqueue_tasks_from_urls(
     batch_items: List[BatchTaskItem] = []
     batch_task = await task_queue.create_batch_task(batch_items)
 
-    # Process all URLs and create tasks with batch_task_id
-    for url in urls:
+    # Helper function to process a single URL
+    async def _process_single_url(url: str) -> BatchTaskItem:
+        """Process a single URL and return a BatchTaskItem."""
         try:
             image_data, final_prompt = await process_image_from_url(url, prompt_to_use)
             task = await _enqueue_task(
@@ -115,16 +117,19 @@ async def enqueue_tasks_from_urls(
                 allow_overflow=True,
                 batch_task_id=batch_task.batch_task_id,
             )
-            batch_items.append(BatchTaskItem(url=url, task_id=task.task_id))
+            return BatchTaskItem(url=url, task_id=task.task_id)
         except ImageProcessingError as exc:
             logger.warning("Failed to process image for URL %s: %s", url, exc)
-            batch_items.append(BatchTaskItem(url=url, error=str(exc)))
+            return BatchTaskItem(url=url, error=str(exc))
         except QueueFullError as exc:
             logger.error("Queue unexpectedly full while allowing overflow for URL %s: %s", url, exc)
-            batch_items.append(BatchTaskItem(url=url, error=str(exc)))
+            return BatchTaskItem(url=url, error=str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unexpected error while enqueueing URL %s", url)
-            batch_items.append(BatchTaskItem(url=url, error=str(exc)))
+            return BatchTaskItem(url=url, error=str(exc))
+
+    # Process all URLs concurrently
+    batch_items = await asyncio.gather(*[_process_single_url(url) for url in urls])
 
     # Update batch task with items (thread-safe)
     await task_queue.update_batch_task_items(batch_task.batch_task_id, batch_items)
