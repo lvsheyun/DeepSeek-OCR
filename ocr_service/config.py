@@ -2,6 +2,10 @@
 
 import os
 from typing import Optional
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Model Configuration
 # NOTE: These parameters are currently HARD-CODED in vLLM's internal processor
